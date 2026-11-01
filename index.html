@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水墨柳帘 - 中国风互动体验</title>
+    <!-- Tailwind CSS for smooth UI styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@300;400;600&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0d110e;
+            font-family: 'Noto Serif SC', 'STKaiti', 'KaiTi', serif;
+            color: #d8e2dc;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .calligraphy {
+            font-family: 'Ma Shan Zheng', 'STKaiti', cursive;
+        }
+
+        /* 水墨暗纹背景 */
+        .ink-bg {
+            background: linear-gradient(180deg, #e0f2fe 0%, #f0fdf4 60%, #f8fafc 100%);
+        }
+
+        /* 宣纸纹理 */
+        .xuan-paper-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            opacity: 0.05;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            z-index: 50;
+        }
+    </style>
+</head>
+<body class="ink-bg w-screen h-screen relative overflow-hidden flex flex-col justify-between items-center">
+
+    <!-- 宣纸质感蒙版 -->
+    <div class="xuan-paper-overlay"></div>
+
+    <!-- 主交互 Canvas 画布 -->
+    <canvas id="interactiveCanvas" class="absolute top-0 left-0 w-full h-full z-10 cursor-pointer"></canvas>
+
+    <!-- 底部操作提示 -->
+    <footer class="relative z-20 bottom-6 pointer-events-none text-center">
+        <div class="inline-flex items-center space-x-2 bg-white/70 backdrop-blur-md px-5 py-2 rounded-full border border-[#2d6a4f]/20 shadow-lg">
+            <span class="w-2 h-2 rounded-full bg-[#40916c] animate-ping"></span>
+            <span class="text-xs md:text-sm text-[#1a2e22]/80 tracking-widest font-medium">
+                移动鼠标拨开柳帘 &nbsp;·&nbsp; 点击激起水墨涟漪
+            </span>
+        </div>
+    </footer>
+
+    <script>
+        /**
+         * 中国风水墨柳帘 - 基于 Verlet 绳索物理与粒子场的互动算法
+         */
+
+        // 柳树古诗词库
+        const POEMS = [
+            "碧玉妆成一树高万条垂下绿丝绦不知细叶谁裁出二月春风似剪刀",
+            "杨柳青青江水平闻郎江上唱歌声东边日出西边雨道是无晴却有晴",
+            "渭城朝雨浥轻尘客舍青青柳色新劝君更尽一杯酒西出阳关无故人",
+            "乱条犹未变初黄倚得东风势便狂解把飞花蒙日月不知天地有清霜",
+            "弱柳千条拂地垂佳人此日歌金缕章台柳色隐青楼客舍春风吹客愁",
+            "沾衣欲湿杏花雨吹面不寒杨柳风",
+            "庭院深深深几许杨柳堆烟帘幕无重数",
+            "草长莺飞二月天拂堤杨柳醉春烟",
+            "渡头杨柳青青枝屈指攀条恨别离",
+            "绝胜烟柳满皇都最是一年春好处"
+        ];
+
+        // 蓝白与自然翠绿配色
+        const COLORS = {
+            textDefault: '#111111',
+            textHighlight: '#000000',
+            leafGreen: '#2d6a4f',
+            leafAccent: '#40916c',
+            stemColor: 'rgba(45, 106, 79, 0.45)',
+            rippleStroke: 'rgba(64, 145, 108, 0.4)',
+            rippleFill: 'rgba(180, 223, 196, 0.15)',
+            swallowDark: '#121614',
+            swallowRed: '#9e2a2b'
+        };
+
+        const canvas = document.getElementById('interactiveCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let width = canvas.width = window.innerWidth;
+        let height = canvas.height = window.innerHeight;
+
+        // 鼠标/触控全局状态对象
+        const mouse = {
+            x: -1000,
+            y: -1000,
+            px: -1000,
+            py: -1000,
+            vx: 0,
+            vy: 0,
+            radius: 120,
+            isHovering: false
+        };
+
+        // 水墨小燕子双飞系统
+        class Swallow {
+            constructor(delayOffset = 0, speedScale = 1) {
+                this.reset(delayOffset, speedScale);
+            }
+
+            reset(delayOffset = 0, speedScale = 1) {
+                this.x = -80 - delayOffset;
+                this.y = height * (0.18 + Math.random() * 0.35);
+                this.baseY = this.y;
+                this.speed = (2.5 + Math.random() * 1.2) * speedScale;
+                this.wingAngle = Math.random() * Math.PI;
+                this.wingSpeed = 0.18 + Math.random() * 0.08;
+                this.size = 5.0 + Math.random() * 1.5; // 体型缩小，精致轻盈
+                this.waveFreq = 0.006 + Math.random() * 0.003;
+                this.waveAmp = 25 + Math.random() * 20;
+                this.angle = 0;
+            }
+
+            update() {
+                this.x += this.speed;
+                const prevY = this.y;
+                this.y = this.baseY + Math.sin(this.x * this.waveFreq) * this.waveAmp;
+                
+                // 计算飞行俯仰角度
+                this.angle = Math.atan2(this.y - prevY, this.speed);
+                this.wingAngle += this.wingSpeed;
+
+                // 飞出屏幕右侧后循环重置
+                if (this.x > width + 100) {
+                    this.reset(Math.random() * 250);
+                }
+            }
+
+            draw(ctx) {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+
+                const wing = Math.sin(this.wingAngle);
+                const s = this.size;
+
+                // 1. 经典双剪尾（深水墨色）
+                ctx.fillStyle = COLORS.swallowDark;
+                ctx.beginPath();
+                ctx.moveTo(-s * 0.5, 0);
+                // 上尾叉
+                ctx.quadraticCurveTo(-s * 2.2, -s * 0.5 + wing * s * 0.2, -s * 3.6, -s * 0.9);
+                ctx.quadraticCurveTo(-s * 2.0, -s * 0.1, -s * 0.5, 0);
+                // 下尾叉
+                ctx.quadraticCurveTo(-s * 2.2, s * 0.5 - wing * s * 0.2, -s * 3.6, s * 0.9);
+                ctx.quadraticCurveTo(-s * 2.0, s * 0.1, -s * 0.5, 0);
+                ctx.fill();
+
+                // 2. 翅膀与稍微丰满自然的身体
+                const wingOffset = wing * s * 1.8;
+                ctx.beginPath();
+                
+                // 秀气的头部
+                ctx.arc(s * 0.8, 0, s * 0.38, 0, Math.PI * 2);
+
+                // 尖锐小巧的鸟喙
+                ctx.moveTo(s * 1.1, -s * 0.08);
+                ctx.lineTo(s * 1.75, 0);
+                ctx.lineTo(s * 1.1, s * 0.08);
+
+                // 自然丰满的躯体曲线（略微调大腰腹弧度）
+                ctx.moveTo(s * 0.8, 0);
+                ctx.quadraticCurveTo(s * 0.2, s * 0.65, -s * 1.0, 0);
+                ctx.quadraticCurveTo(s * 0.2, -s * 0.65, s * 0.8, 0);
+
+                // 上翅膀
+                ctx.moveTo(s * 0.3, -s * 0.2);
+                ctx.quadraticCurveTo(-s * 0.8, -s * 2.2 - wingOffset, -s * 1.8, -s * 3.8 - wingOffset);
+                ctx.quadraticCurveTo(-s * 0.8, -s * 1.5 - wingOffset * 0.5, -s * 0.3, -s * 0.2);
+
+                // 下翅膀
+                ctx.moveTo(s * 0.3, s * 0.2);
+                ctx.quadraticCurveTo(-s * 0.8, s * 2.2 + wingOffset, -s * 1.8, s * 3.8 + wingOffset);
+                ctx.quadraticCurveTo(-s * 0.8, s * 1.5 + wingOffset * 0.5, -s * 0.3, s * 0.2);
+                ctx.fill();
+
+                // 3. 经典朱红颔点（水墨点睛）
+                ctx.fillStyle = COLORS.swallowRed;
+                ctx.beginPath();
+                ctx.arc(s * 0.95, s * 0.08, s * 0.15, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        // 实例化两只水墨小燕子
+        const swallows = [
+            new Swallow(0, 1.0),
+            new Swallow(260, 0.85)
+        ];
+
+        // 容器数组
+        let ribbons = [];
+        let ripples = [];
+        let floatingLeaves = [];
+
+        // 监听调整大小
+        window.addEventListener('resize', () => {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            initRibbons();
+        });
+
+        // 鼠标/触控位置更新
+        function updateMousePos(x, y) {
+            mouse.vx = x - mouse.x;
+            mouse.vy = y - mouse.y;
+            mouse.px = mouse.x;
+            mouse.py = mouse.y;
+            mouse.x = x;
+            mouse.y = y;
+            mouse.isHovering = true;
+        }
+
+        window.addEventListener('mousemove', (e) => updateMousePos(e.clientX, e.clientY));
+        window.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 0) {
+                updateMousePos(e.touches[0].clientX, e.touches[0].clientY);
+            }
+        }, { passive: true });
+
+        window.addEventListener('mouseleave', () => {
+            mouse.x = -1000;
+            mouse.y = -1000;
+            mouse.isHovering = false;
+        });
+
+        // 点击生成水墨涟漪与飘落叶片
+        window.addEventListener('click', (e) => createRipple(e.clientX, e.clientY));
+        window.addEventListener('touchstart', (e) => {
+            if (e.touches.length > 0) {
+                createRipple(e.touches[0].clientX, e.touches[0].clientY);
+            }
+        }, { passive: true });
+
+        function createRipple(x, y) {
+            ripples.push({
+                x: x,
+                y: y,
+                radius: 5,
+                maxRadius: 130 + Math.random() * 60,
+                alpha: 0.6,
+                lineWidth: 2 + Math.random() * 2
+            });
+
+            // 生成几片随水墨飞舞的柳叶粒子
+            for (let i = 0; i < 6; i++) {
+                floatingLeaves.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 4,
+                    vy: (Math.random() - 0.5) * 4 - 1,
+                    size: 8 + Math.random() * 8,
+                    angle: Math.random() * Math.PI * 2,
+                    vAngle: (Math.random() - 0.5) * 0.05,
+                    alpha: 0.95,
+                    life: 1.0
+                });
+            }
+        }
+
+        /**
+         * 节点类 (Verlet Node)
+         */
+        class Node {
+            constructor(x, y, isPinned = false) {
+                this.x = x;
+                this.y = y;
+                this.oldX = x;
+                this.oldY = y;
+                this.pinned = isPinned;
+                this.char = '';
+            }
+
+            update(gravity, friction) {
+                if (this.pinned) return;
+
+                const vx = (this.x - this.oldX) * friction;
+                const vy = (this.y - this.oldY) * friction;
+
+                this.oldX = this.x;
+                this.oldY = this.y;
+
+                this.x += vx;
+                this.y += vy + gravity;
+            }
+        }
+
+        /**
+         * 弹簧/约束类 (Constraint)
+         */
+        class Constraint {
+            constructor(nodeA, nodeB, length) {
+                this.nodeA = nodeA;
+                this.nodeB = nodeB;
+                this.length = length;
+                this.stiffness = 0.98; // 提高刚度，提升恢复速度
+            }
+
+            resolve() {
+                const dx = this.nodeB.x - this.nodeA.x;
+                const dy = this.nodeB.y - this.nodeA.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+                const diff = (dist - this.length) / dist;
+
+                const offsetX = dx * 0.5 * diff * this.stiffness;
+                const offsetY = dy * 0.5 * diff * this.stiffness;
+
+                if (!this.nodeA.pinned) {
+                    this.nodeA.x += offsetX;
+                    this.nodeA.y += offsetY;
+                }
+                if (!this.nodeB.pinned) {
+                    this.nodeB.x -= offsetX;
+                    this.nodeB.y -= offsetY;
+                }
+            }
+        }
+
+        /**
+         * 柳丝带/文字绳索类
+         */
+        class Ribbon {
+            constructor(x, poemText) {
+                this.nodes = [];
+                this.constraints = [];
+                this.poemText = poemText;
+                this.fontSize = Math.min(Math.max(width / 65, 16), 24);
+                this.nodeSpacing = this.fontSize * 1.65;
+                this.length = Math.floor((height * 0.75) / this.nodeSpacing) + Math.floor(Math.random() * 3);
+                
+                // 更加舒缓自然风：幅度减小，速度变慢
+                this.windOffset = Math.random() * 0.5;
+                this.windSpeed = 0.006 + Math.random() * 0.003;
+
+                for (let i = 0; i < this.length; i++) {
+                    const nodeY = 40 + i * this.nodeSpacing;
+                    const node = new Node(x, nodeY, i === 0);
+                    
+                    if (i < poemText.length) {
+                        node.char = poemText[i];
+                    } else {
+                        node.char = poemText[i % poemText.length];
+                    }
+
+                    this.nodes.push(node);
+
+                    if (i > 0) {
+                        const prevNode = this.nodes[i - 1];
+                        this.constraints.push(new Constraint(prevNode, node, this.nodeSpacing));
+                    }
+                }
+            }
+
+            update(time) {
+                const gravity = 0.25; // 增加重力感，加速回复
+                const friction = 0.88; // 增加阻尼系数，减少晃动、快速归位
+
+                // 统一先“从右向左”(-)再“从左向右”(+)舒缓摆动
+                const windForce = -Math.cos(time * this.windSpeed + this.windOffset) * 0.18;
+
+                for (let i = 0; i < this.nodes.length; i++) {
+                    const node = this.nodes[i];
+                    
+                    if (!node.pinned) {
+                        node.x += windForce * (i / this.nodes.length);
+                    }
+
+                    node.update(gravity, friction);
+
+                    // 鼠标互动推开
+                    if (mouse.x > -500) {
+                        const dx = node.x - mouse.x;
+                        const dy = node.y - mouse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+
+                        if (dist < mouse.radius) {
+                            const force = (1 - dist / mouse.radius);
+                            const angle = Math.atan2(dy, dx);
+                            
+                            const pushX = Math.cos(angle) * force * 30;
+                            const pushY = Math.sin(angle) * force * 10;
+                            const inertiaX = mouse.vx * force * 0.35;
+
+                            if (!node.pinned) {
+                                node.x += pushX + inertiaX;
+                                node.y += pushY;
+                            }
+                        }
+                    }
+                }
+
+                // 多次迭代以维持弹簧刚度，使手划过离开后快速回弹归位
+                for (let iter = 0; iter < 8; iter++) {
+                    for (let constraint of this.constraints) {
+                        constraint.resolve();
+                    }
+                }
+            }
+
+            draw(ctx) {
+                if (this.nodes.length < 2) return;
+
+                // 1. 绘制贯穿整条丝带的水墨柳枝线条
+                ctx.beginPath();
+                ctx.moveTo(this.nodes[0].x, this.nodes[0].y);
+                
+                for (let i = 1; i < this.nodes.length; i++) {
+                    const xc = (this.nodes[i].x + this.nodes[i - 1].x) / 2;
+                    const yc = (this.nodes[i].y + this.nodes[i - 1].y) / 2;
+                    ctx.quadraticCurveTo(this.nodes[i - 1].x, this.nodes[i - 1].y, xc, yc);
+                }
+                
+                ctx.strokeStyle = COLORS.stemColor;
+                ctx.lineWidth = 1.8;
+                ctx.stroke();
+
+                // 2. 绘制每个字及节点的动态效果
+                ctx.font = `500 ${this.fontSize}px 'Noto Serif SC', 'STKaiti', serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                for (let i = 0; i < this.nodes.length; i++) {
+                    const node = this.nodes[i];
+                    
+                    let angle = 0;
+                    if (i < this.nodes.length - 1) {
+                        angle = Math.atan2(this.nodes[i + 1].y - node.y, this.nodes[i + 1].x - node.x) - Math.PI / 2;
+                    } else if (i > 0) {
+                        angle = Math.atan2(node.y - this.nodes[i - 1].y, node.x - this.nodes[i - 1].x) - Math.PI / 2;
+                    }
+
+                    const dx = node.x - mouse.x;
+                    const dy = node.y - mouse.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const isNear = dist < mouse.radius;
+
+                    ctx.save();
+                    ctx.translate(node.x, node.y);
+                    ctx.rotate(angle * 0.6);
+
+                    // 靠近时的柔光晕效果
+                    if (isNear) {
+                        ctx.fillStyle = 'rgba(64, 145, 108, 0.15)';
+                        ctx.beginPath();
+                        ctx.arc(0, 0, this.fontSize * 0.8, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 黑色水墨文字
+                    if (isNear) {
+                        ctx.fillStyle = COLORS.textHighlight;
+                        ctx.shadowColor = COLORS.leafGreen;
+                        ctx.shadowBlur = 6;
+                    } else {
+                        const alpha = Math.max(0.4, 1 - (i / this.nodes.length) * 0.55);
+                        ctx.fillStyle = `rgba(17, 17, 17, ${alpha})`;
+                        ctx.shadowBlur = 0;
+                    }
+
+                    ctx.fillText(node.char, 0, 0);
+
+                    // 翠绿柳叶点缀
+                    if (i % 4 === 2) {
+                        ctx.fillStyle = isNear ? COLORS.leafGreen : COLORS.leafAccent;
+                        ctx.beginPath();
+                        ctx.ellipse(this.fontSize * 0.75, 0, this.fontSize * 0.35, this.fontSize * 0.12, Math.PI / 4, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    ctx.restore();
+                }
+            }
+        }
+
+        // 初始化柳帘列
+        function initRibbons() {
+            ribbons = [];
+            
+            const cols = width < 768 ? 9 : 18;
+            const margin = width / (cols + 1);
+
+            for (let i = 0; i < cols; i++) {
+                const x = margin * (i + 1) + (Math.random() - 0.5) * 10;
+                const poem = POEMS[i % POEMS.length];
+                ribbons.push(new Ribbon(x, poem));
+            }
+        }
+
+        // 渲染循环
+        let time = 0;
+        function animate() {
+            time++;
+
+            ctx.clearRect(0, 0, width, height);
+
+            // 1. 绘制和更新水墨涟漪
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                const r = ripples[i];
+                r.radius += 2.5;
+                r.alpha -= 0.009;
+
+                if (r.alpha <= 0 || r.radius >= r.maxRadius) {
+                    ripples.splice(i, 1);
+                    continue;
+                }
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(64, 145, 108, ${r.alpha})`;
+                ctx.lineWidth = r.lineWidth;
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.arc(r.x, r.y, r.radius * 0.7, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(180, 223, 196, ${r.alpha * 0.3})`;
+                ctx.fill();
+                ctx.restore();
+            }
+
+            // 2. 更新和绘制飘落柳叶
+            for (let i = floatingLeaves.length - 1; i >= 0; i--) {
+                const leaf = floatingLeaves[i];
+                leaf.x += leaf.vx;
+                leaf.y += leaf.vy;
+                leaf.vy += 0.03;
+                leaf.angle += leaf.vAngle;
+                leaf.alpha -= 0.008;
+
+                if (leaf.alpha <= 0) {
+                    floatingLeaves.splice(i, 1);
+                    continue;
+                }
+
+                ctx.save();
+                ctx.translate(leaf.x, leaf.y);
+                ctx.rotate(leaf.angle);
+                ctx.fillStyle = `rgba(45, 106, 79, ${leaf.alpha})`;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, leaf.size, leaf.size * 0.35, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+
+            // 3. 更新并绘制柳帘丝带
+            for (let ribbon of ribbons) {
+                ribbon.update(time);
+                ribbon.draw(ctx);
+            }
+
+            // 4. 更新与绘制穿梭的小燕子
+            for (let swallow of swallows) {
+                swallow.update();
+                swallow.draw(ctx);
+            }
+
+            mouse.vx *= 0.8;
+            mouse.vy *= 0.8;
+
+            requestAnimationFrame(animate);
+        }
+
+        // 启动程序
+        initRibbons();
+        animate();
+    </script>
+</body>
+</html>
